@@ -1,5 +1,9 @@
 # edge-vision-core
 
+[![Get impulse-runner from the Snap Store](https://snapcraft.io/static/images/badges/en/snap-store-black.svg)](https://snapcraft.io/impulse-runner)
+
+![The demo on a Raspberry Pi 5: YOLOv5 detecting three bottles, with CPU, temperature, RAM and inference time](docs/demo.jpg)
+
 Real-time object detection on a Raspberry Pi 5 running **Ubuntu Core 24**, ready to demo.
 A USB camera feeds an [Edge Impulse](https://edgeimpulse.com) YOLOv5 model, and
 **Ubuntu Frame** shows the live result full screen on the Pi's HDMI display, with CPU,
@@ -15,7 +19,7 @@ USB camera ──► impulse-runner snap ──► http://<pi>:8000 ──┬─
 ```
 
 The model detects COCO's 80 everyday objects, such as person, cup, bottle, phone and
-laptop. Measured on a Pi 5 (320×320, int8, CPU only): **~13–15 FPS, ~45–55 ms per frame**.
+laptop. Measured on a Pi 5 (320×320, int8, CPU only): **~12–15 FPS, ~45–60 ms per frame**.
 
 The whole setup, once Ubuntu Core is running, is:
 
@@ -23,9 +27,25 @@ The whole setup, once Ubuntu Core is running, is:
 sudo snap install impulse-runner --edge
 sudo snap connect impulse-runner:camera
 sudo snap connect impulse-runner:hardware-observe
-sudo snap set impulse-runner threshold=0.45 \
+sudo snap set impulse-runner threshold=0.6 \
   model-url=https://github.com/salmanfarisvp/edge-vision-core/raw/main/models/yolov5-coco-320-int8-linux-aarch64.eim
 ```
+
+### The snap
+
+| | |
+| --- | --- |
+| Snap | [`impulse-runner`](https://snapcraft.io/impulse-runner) ([source](https://github.com/salmanfarisvp/impulse-runner)) |
+| Version | `26.11.3` (CalVer `YY.MM.N`), `latest/edge` channel |
+| Architectures | arm64 (Raspberry Pi), amd64 |
+| Base, confinement | core24, strict |
+| Interfaces this demo uses | `camera` (USB webcam), `hardware-observe` (CPU temperature and board name), `network`, `network-bind` (web page on port 8000) |
+| Optional | `alsa`, only for audio models |
+| Settings this demo uses | `threshold=0.6`, `model-url=<the model in this repo>` |
+
+`camera` and `hardware-observe` aren't auto-connected, so the `snap connect` lines above
+are needed once. They stay connected across updates, and the snap refreshes itself
+when a new version is released.
 
 ---
 
@@ -87,7 +107,7 @@ Point impulse-runner at the model in this repo. The Pi downloads it itself, so t
 nothing to copy:
 
 ```bash
-sudo snap set impulse-runner threshold=0.45 \
+sudo snap set impulse-runner threshold=0.6 \
   model-url=https://github.com/salmanfarisvp/edge-vision-core/raw/main/models/yolov5-coco-320-int8-linux-aarch64.eim
 ```
 
@@ -101,8 +121,8 @@ snap logs impulse-runner -n 5
 
 Open `http://<pi-ip>:8000` from your laptop to see it.
 
-`threshold=0.45` suits this COCO model indoors. impulse-runner's default of 0.5 hides
-some real detections in dim light.
+`threshold=0.6` keeps the screen clean: only confident boxes are drawn. In dim light,
+lower it to `0.45` to catch more objects.
 
 ## Step 5: Show it on the display with Ubuntu Frame
 
@@ -117,9 +137,13 @@ On Ubuntu Core both run as services and start at boot, and the kiosk's `wayland`
 connects to Frame automatically. From now on the Pi boots straight into the demo.
 `?kiosk=1` hides the mouse pointer and the upload button.
 
-The screen shows the live video with boxes on the left. On the right: the top detection,
-per-object scores, **System** (CPU %, RAM, CPU temperature, load) and **Model** (results
-per second, ms per inference, threshold).
+The screen shows the live video with boxes on the left (see the screenshot at the top).
+On the right, from top to bottom:
+
+- the top detection in large type, with a confidence meter
+- every object above the threshold with its score (room for 8)
+- **Device**: CPU %, CPU temperature, RAM and inference time, each with a 40-second graph
+- the model name, results per second, threshold, and the address to open on a phone
 
 ---
 
