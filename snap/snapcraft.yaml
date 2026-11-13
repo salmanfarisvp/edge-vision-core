@@ -17,6 +17,15 @@ confinement: strict
 platforms:
   arm64:
 
+components:
+  model:
+    type: standard
+    summary: YOLOv5 COCO object detection model (Edge Impulse .eim)
+    description: |
+      YOLOv5 pretrained on COCO's 80 classes, 320x320 int8, built with Edge
+      Impulse for Linux AARCH64. Used when no model.eim is in $SNAP_COMMON.
+    version: '12'
+
 apps:
   server:
     command: bin/python3 $SNAP/app/edge_vision.py
@@ -33,6 +42,9 @@ parts:
     source: .
     python-requirements: [requirements.txt]
     stage-packages: [python3-venv]
+    build-environment:
+      - PIP_DEFAULT_TIMEOUT: "120"   # tolerate slow connections to PyPI
+      - PIP_RETRIES: "10"
 
   app:
     plugin: dump
@@ -40,3 +52,15 @@ parts:
     override-prime: |
       craftctl default
       chmod 755 app/edge_vision.py
+
+  # The default model lives in its own component, so it can be rebuilt and
+  # installed separately from the app.
+  model:
+    plugin: dump
+    source: models/
+    organize:
+      yolov5-coco-320-int8-linux-aarch64.eim: (component/model)/default.eim
+      README.md: (component/model)/README.md
+    override-prime: |
+      craftctl default
+      chmod 755 "$CRAFT_COMPONENT_MODEL_PRIME/default.eim"

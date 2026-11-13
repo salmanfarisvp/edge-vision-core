@@ -10,7 +10,8 @@ USB camera ──► edge-vision-core snap ──► http://<pi>:8000 ──┬�
                (OpenCV + model.eim)                         └─► any browser on the LAN
 ```
 
-Measured on a Pi 5 with a YOLOv5 COCO model (320×320, int8, CPU only):
+Works out of the box: a YOLOv5 COCO model ships alongside the app as a snap component (80 everyday objects such as
+person, cup, bottle and phone). Measured on a Pi 5 (320×320, int8, CPU only):
 **~15 FPS, ~60 ms per frame**.
 
 ---
@@ -85,7 +86,11 @@ Both connections reconnect on boot. NetworkManager takes over Ethernet too, so y
 Ethernet IP may change once. Set a DHCP reservation for the Pi in your router so it
 stays the same.
 
-## Step 4: Get an object detection model from Edge Impulse
+## Step 4 (optional): Get your own model from Edge Impulse
+
+**You can skip this step.** The snap ships with a ready-to-use YOLOv5 COCO model
+([`models/`](models/)) that detects 80 everyday objects. Do this step only to use a
+different model.
 
 1. Open the public project
    [YOLOv5 COCO Pretrained](https://studio.edgeimpulse.com/public/382356/live) and click
@@ -106,7 +111,15 @@ classification. Your own trained model is a drop-in replacement.
 multipass exec snapbuild -- bash -lc 'cd ~/snaps/edge-vision-core && snapcraft pack'
 ```
 
-This produces `edge-vision-core_0.1_arm64.snap` in the project folder. The first build
+This produces two files in the project folder:
+
+| File | Contents |
+| --- | --- |
+| `edge-vision-core_0.1_arm64.snap` | The app: camera capture, inference and the display page |
+| `edge-vision-core+model_12.comp` | The **model component**: the YOLOv5 COCO `.eim` (about 15 MB) |
+
+The model ships as a [snap component](https://snapcraft.io/docs/explanation/how-snaps-work/snap-components/),
+so the app and the model are installed and updated as separate pieces. The first build
 takes a few minutes; later builds are quicker.
 
 ## Step 6: Install on the Pi
@@ -114,17 +127,15 @@ takes a few minutes; later builds are quicker.
 From the laptop:
 
 ```
-PI=<user>@<pi-ip>
-scp edge-vision-core_0.1_arm64.snap "$PI":
-scp ~/Downloads/<your-model>-linux-aarch64-*.eim "$PI":model.eim
+scp edge-vision-core_0.1_arm64.snap edge-vision-core+model_12.comp <user>@<pi-ip>:
 ```
 
-On the Pi:
+On the Pi (snap components need **snapd 2.67 or newer**; check with `snap version` and
+run `sudo snap refresh snapd` if it's older):
 
 ```
-sudo snap install --dangerous ./edge-vision-core_0.1_arm64.snap
+sudo snap install --dangerous ./edge-vision-core_0.1_arm64.snap ./edge-vision-core+model_12.comp
 sudo snap connect edge-vision-core:camera                 # camera is not auto-connected
-sudo cp model.eim /var/snap/edge-vision-core/common/model.eim
 sudo snap set edge-vision-core threshold=0.45
 snap logs -f edge-vision-core.server
 ```
@@ -133,9 +144,34 @@ You should see:
 
 ```
 Serving on http://0.0.0.0:8000  (camera /dev/video0, threshold 0.45)
+Loaded model (model component): ... (object_detection, 320x320x3, 80 labels: ...)
 Camera /dev/video0 opened
-Loaded model: ... (object_detection, 320x320x3, 80 labels: ...)
 ```
+
+**Using your own model from step 4** (optional): copy it over, and it takes priority over
+the model component within about 3 seconds:
+
+```
+scp ~/Downloads/<your-model>-linux-aarch64-*.eim <user>@<pi-ip>:model.eim
+ssh <user>@<pi-ip> 'sudo cp model.eim /var/snap/edge-vision-core/common/model.eim'
+```
+
+Delete `/var/snap/edge-vision-core/common/model.eim` to go back to the component's model.
+
+### Updating the model without touching the app
+
+To ship a new model version as a component, replace the file in `models/`, bump `version`
+under `components: model:` in `snap/snapcraft.yaml`, rebuild, and install only the new
+`.comp`:
+
+```
+sudo snap install --dangerous ./edge-vision-core+model_13.comp
+snap components edge-vision-core
+```
+
+The app picks up the new model within about 3 seconds, without reinstalling or rebuilding
+the app. Snap Store uploads currently pair each app revision with its components, so
+store users get the new model with the next app release.
 
 Open `http://<pi-ip>:8000` on your laptop to check it works.
 
@@ -209,7 +245,7 @@ hides the mouse cursor.
 | --- | --- |
 | Screen black or grey | `sudo snap restart ubuntu-frame wpe-webkit-mir-kiosk` |
 | "No camera at /dev/video0" | Re-plug the USB camera; check `ls /dev/video*` and `snap connections edge-vision-core` |
-| "No model" | `ls -l /var/snap/edge-vision-core/common/` and copy `model.eim` again |
+| "Model error" after copying your own model | Make sure it's the **Linux (AARCH64)** build; `sudo rm /var/snap/edge-vision-core/common/model.eim` falls back to the bundled model |
 | Nothing detected | Add light, move closer, or `sudo snap set edge-vision-core threshold=0.35` |
 | Page doesn't load from the laptop | Laptop and Pi must be on the same network; check the IP with `ip -4 -br addr` |
 
@@ -242,8 +278,10 @@ Each change restarts the service with the new values.
 - **Display:** a small HTTP server serves the page, `/frame.jpg` (one frame, with boxes
   drawn) and `/api/status` (JSON results). The page draws frames onto a canvas instead
   of using an MJPEG `<img>`, which flickers in WebKit, the engine the kiosk uses.
-- **Model hot-swap:** the app checks `model.eim`'s timestamp every 3 seconds and reloads
-  it when it changes.
+- **Model selection and hot-swap:** every 3 seconds the app checks for
+  `$SNAP_COMMON/model.eim` (yours), and otherwise uses `default.eim` from the `model`
+  component (`$SNAP_COMPONENTS/model/`). It reloads when either file appears, changes or
+  is removed.
 
 | Path | Purpose |
 | --- | --- |
@@ -251,6 +289,7 @@ Each change restarts the service with the new values.
 | `snap/hooks/install`, `snap/hooks/configure` | Default options, validation, and a restart when options change |
 | `src/app/edge_vision.py` | Capture, inference and the HTTP server |
 | `src/www/index.html` | The live display page |
+| `models/` | The YOLOv5 COCO model, packed into the `model` component; see [models/README.md](models/README.md) for its source and license |
 | `requirements.txt` | `opencv-python-headless`, `numpy` |
 
 ## Developing on a Mac
@@ -267,6 +306,5 @@ aarch64 Linux binary, so test the model on the Pi.
 
 - Physical AI: switch an LED or buzzer through the `gpio` interface when a chosen object
   is detected.
-- Ship the model as a snap component, so it updates separately from the app.
 - Publish to the Snap Store (`snapcraft register edge-vision-core`) so it installs with
   `sudo snap install edge-vision-core`.

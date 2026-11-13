@@ -29,7 +29,21 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 SNAP = os.environ.get("SNAP", os.path.dirname(HERE))
 COMMON = os.environ.get("SNAP_COMMON", os.getcwd())
-MODEL_PATH = os.path.join(COMMON, "model.eim")
+MODEL_PATH = os.path.join(COMMON, "model.eim")  # user's model, wins over the bundled one
+
+
+def _component_dir(name):
+    """Mount point of one of this snap's components (snapd 2.67+)."""
+    if "SNAP_COMPONENTS" in os.environ:  # snapd 2.78+
+        return os.path.join(os.environ["SNAP_COMPONENTS"], name)
+    return os.path.join(os.environ["SNAP"], "..", "components",
+                        os.environ.get("SNAP_REVISION", ""), name)
+
+
+# Default model: the snap's `model` component, or models/ in a repo checkout.
+DEFAULT_MODEL = (os.path.join(_component_dir("model"), "default.eim") if "SNAP" in os.environ
+                 else os.path.join(os.path.dirname(os.path.dirname(HERE)), "models",
+                                   "yolov5-coco-320-int8-linux-aarch64.eim"))
 WEB_DIR = os.path.join(SNAP, "www")
 
 
@@ -216,41 +230,51 @@ class Pipeline:
             self.status = status
             self.cond.notify_all()
 
-    def _load_model(self):
-        if not os.path.exists(MODEL_PATH):
-            return None, None
-        mtime = os.path.getmtime(MODEL_PATH)
-        runner = EimRunner(MODEL_PATH)
+    @staticmethod
+    def _model_key():
+        """(path, mtime) of the model to use: the user's copy wins over the bundled one."""
+        for path in (MODEL_PATH, DEFAULT_MODEL):
+            try:
+                return path, os.path.getmtime(path)
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
+    def _load_model(path):
+        if path == MODEL_PATH:
+            os.chmod(path, 0o755)  # scp/cp often drops the exec bit
+        runner = EimRunner(path)
         labels = runner.params.get("labels", [])
-        log(f"Loaded model: {runner.name} ({runner.kind}, "
+        source = "model component" if path == DEFAULT_MODEL else path
+        log(f"Loaded model ({source}): {runner.name} ({runner.kind}, "
             f"{runner.width}x{runner.height}x{runner.channels}, {len(labels)} labels: "
             f"{', '.join(map(str, labels[:8]))}{' ...' if len(labels) > 8 else ''})")
-        return runner, mtime
+        return runner
 
     def run(self):
-        cap, runner, model_mtime, model_error = None, None, None, None
+        cap, runner, loaded_key, model_error = None, None, None, None
         last_model_check = 0.0
         fps, last_frame = 0.0, time.time()
 
         while True:
-            # (Re)load the model on start and whenever model.eim changes.
+            # (Re)load on start, when model.eim changes, or when it's added/removed.
             now = time.time()
             if now - last_model_check > 3:
                 last_model_check = now
-                exists = os.path.exists(MODEL_PATH)
-                changed = exists and os.path.getmtime(MODEL_PATH) != model_mtime
-                if changed or (runner and not exists):
+                key = self._model_key()
+                if key != loaded_key:
                     if runner:
                         runner.close()
-                        runner, model_mtime = None, None
-                    try:
-                        os.chmod(MODEL_PATH, 0o755)
-                        runner, model_mtime = self._load_model()
-                        model_error = None
-                    except Exception as e:  # keep streaming video without a model
-                        model_error = str(e)
-                        model_mtime = os.path.getmtime(MODEL_PATH) if exists else None
-                        log(f"Model failed to load: {e}")
+                        runner = None
+                    loaded_key = key  # set even on failure, so a bad file isn't retried in a loop
+                    model_error = None
+                    if key:
+                        try:
+                            runner = self._load_model(key[0])
+                        except Exception as e:  # keep streaming video without a model
+                            model_error = str(e)
+                            log(f"Model failed to load: {e}")
 
             if cap is None or not cap.isOpened():
                 # V4L2 on Linux (the Pi); the default backend elsewhere (macOS dev).
@@ -283,7 +307,7 @@ class Pipeline:
                 except Exception as e:
                     log(f"Inference failed, reloading model: {e}")
                     runner.close()
-                    runner, model_mtime = None, None
+                    runner, loaded_key = None, None  # reload on the next check
                     continue
                 latency = (time.time() - t0) * 1000
                 boxes = [b for b in boxes if b["value"] >= self.threshold]
@@ -310,7 +334,7 @@ class Pipeline:
                 status.update(state="warn", message=f"Model error: {model_error}")
             else:
                 status.update(state="warn", message=
-                    f"No model. Copy your Linux (AARCH64) .eim to {MODEL_PATH}")
+                    f"No model. Install the model component, or copy a Linux (AARCH64) .eim to {MODEL_PATH}")
 
             now = time.time()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last_frame, 1e-6))
