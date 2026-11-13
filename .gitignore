@@ -1,0 +1,12 @@
+# snapcraft build output
+*.snap
+parts/
+stage/
+prime/
+
+# models are large and project-specific; copy them to the device instead
+*.eim
+
+# python
+__pycache__/
+.venv/

@@ -1,0 +1,42 @@
+name: edge-vision-core
+base: core24
+version: '0.1'
+summary: Edge Impulse live camera demo for Ubuntu Core
+description: |
+  Runs an Edge Impulse .eim model on frames from a USB camera and serves a
+  live view with the results on port 8000. Pair it with Ubuntu Frame and
+  wpe-webkit-mir-kiosk to show it full screen on a display attached to the Pi.
+
+  Options (snap set edge-vision-core ...):
+    port       HTTP port (default 8000)
+    camera     V4L2 camera index, /dev/videoN (default 0)
+    threshold  minimum confidence to show a result (default 0.6)
+    model-url  optional URL to download model.eim from
+grade: devel
+confinement: strict
+platforms:
+  arm64:
+
+apps:
+  server:
+    command: bin/python3 $SNAP/app/edge_vision.py
+    daemon: simple
+    restart-condition: always
+    restart-delay: 3s
+    environment:
+      OPENCV_LOG_LEVEL: ERROR   # stop OpenCV repeating warnings while no camera is attached
+    plugs: [camera, network, network-bind]
+
+parts:
+  deps:
+    plugin: python
+    source: .
+    python-requirements: [requirements.txt]
+    stage-packages: [python3-venv]
+
+  app:
+    plugin: dump
+    source: src/
+    override-prime: |
+      craftctl default
+      chmod 755 app/edge_vision.py

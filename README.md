@@ -1,0 +1,272 @@
+# edge-vision-core
+
+Real-time object detection on a Raspberry Pi 5 running **Ubuntu Core 24**, packaged as
+a strictly confined snap. An [Edge Impulse](https://edgeimpulse.com) model looks at a
+USB camera, and **Ubuntu Frame** shows the live result full screen on the Pi's HDMI
+display. The same page opens in any browser on the network.
+
+```
+USB camera ──► edge-vision-core snap ──► http://<pi>:8000 ──┬─► wpe-webkit-mir-kiosk ─► Ubuntu Frame ─► HDMI
+               (OpenCV + model.eim)                         └─► any browser on the LAN
+```
+
+Measured on a Pi 5 with a YOLOv5 COCO model (320×320, int8, CPU only):
+**~15 FPS, ~60 ms per frame**.
+
+---
+
+## What you need
+
+| Item | Notes |
+| --- | --- |
+| Raspberry Pi 5 | 4 GB or 8 GB, official 27 W USB-C supply |
+| microSD card | 16 GB or more |
+| USB webcam | Any UVC webcam. A Pi Camera Module (CSI ribbon) is **not** supported, because this snap uses V4L2, not libcamera |
+| HDMI display + micro-HDMI cable | Plug into HDMI0, the port next to the USB-C power |
+| Ethernet cable | Simplest for first boot. WiFi can be added later (step 3) |
+| A Mac or Linux laptop | For building the snap |
+| Accounts | [Ubuntu One](https://login.ubuntu.com) with an SSH key uploaded, plus [Edge Impulse](https://studio.edgeimpulse.com) (free) |
+
+---
+
+## Step 1: Flash Ubuntu Core 24 on the Pi
+
+1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+2. **Choose device:** Raspberry Pi 5. **Choose OS:** Other general-purpose OS → Ubuntu →
+   **Ubuntu Core 24 (64-bit)**. Choose the SD card, then write.
+3. Put the card in the Pi, connect Ethernet, HDMI and a keyboard, and power on.
+4. Follow the first-boot console: choose the network, then enter your **Ubuntu One
+   email**. It imports your SSH key and prints the Pi's IP address.
+5. From your laptop:
+
+   ```
+   ssh <ubuntu-one-username>@<pi-ip>
+   ```
+
+> **"REMOTE HOST IDENTIFICATION HAS CHANGED"?** The Pi has an IP address your laptop
+> previously used for another device. Run `ssh-keygen -R <pi-ip>` and connect again.
+
+## Step 2: Set up the build machine (Mac)
+
+Snaps are built in Linux. On a Mac, use a Multipass VM with your project folder mounted
+into it.
+
+```
+brew install --cask multipass
+multipass launch 24.04 --name snapbuild --cpus 4 --memory 8G --disk 40G
+multipass mount ~/snaps snapbuild:/home/ubuntu/snaps
+multipass exec snapbuild -- sudo snap install snapcraft --classic
+multipass exec snapbuild -- sudo snap install lxd
+multipass exec snapbuild -- sudo lxd init --auto
+multipass exec snapbuild -- sudo usermod -aG lxd ubuntu
+```
+
+On an Apple Silicon Mac the VM is arm64, so it builds the Pi's arm64 snap natively.
+
+Clone this repo into the mounted folder:
+
+```
+cd ~/snaps
+git clone https://github.com/salmanfarisvp/edge-vision-core.git
+```
+
+## Step 3 (optional): WiFi on the Pi
+
+Ubuntu Core has no NetworkManager by default. To add WiFi alongside Ethernet:
+
+```
+sudo snap install network-manager --channel=24/stable
+sudo network-manager.nmcli device wifi connect "YourSSID" password "YourPassword"
+network-manager.nmcli device status        # eth0 and wlan0 both "connected"
+ip -4 -br addr                             # one IP per interface
+```
+
+Both connections reconnect on boot. NetworkManager takes over Ethernet too, so your
+Ethernet IP may change once. Set a DHCP reservation for the Pi in your router so it
+stays the same.
+
+## Step 4: Get an object detection model from Edge Impulse
+
+1. Open the public project
+   [YOLOv5 COCO Pretrained](https://studio.edgeimpulse.com/public/382356/live) and click
+   **Clone this project**. It's a YOLOv5 model pretrained on COCO's 80 everyday
+   classes: person, cup, bottle, cell phone, laptop, book, chair, and so on.
+2. In your clone: **Deployment** → search **Linux (AARCH64)** → **Quantized (int8)** →
+   **Build**. You get a `.eim` file of about 15 MB.
+
+Any Edge Impulse **image** project works: object detection (YOLO, FOMO, SSD) or image
+classification. Your own trained model is a drop-in replacement.
+
+> That public project names its classes `class 1` … `class 80`. The app detects this
+> and shows the COCO names (`person`, `cup`, ...) instead.
+
+## Step 5: Build the snap
+
+```
+multipass exec snapbuild -- bash -lc 'cd ~/snaps/edge-vision-core && snapcraft pack'
+```
+
+This produces `edge-vision-core_0.1_arm64.snap` in the project folder. The first build
+takes a few minutes; later builds are quicker.
+
+## Step 6: Install on the Pi
+
+From the laptop:
+
+```
+PI=<user>@<pi-ip>
+scp edge-vision-core_0.1_arm64.snap "$PI":
+scp ~/Downloads/<your-model>-linux-aarch64-*.eim "$PI":model.eim
+```
+
+On the Pi:
+
+```
+sudo snap install --dangerous ./edge-vision-core_0.1_arm64.snap
+sudo snap connect edge-vision-core:camera                 # camera is not auto-connected
+sudo cp model.eim /var/snap/edge-vision-core/common/model.eim
+sudo snap set edge-vision-core threshold=0.45
+snap logs -f edge-vision-core.server
+```
+
+You should see:
+
+```
+Serving on http://0.0.0.0:8000  (camera /dev/video0, threshold 0.45)
+Camera /dev/video0 opened
+Loaded model: ... (object_detection, 320x320x3, 80 labels: ...)
+```
+
+Open `http://<pi-ip>:8000` on your laptop to check it works.
+
+## Step 7: Show it on the display with Ubuntu Frame
+
+On the Pi:
+
+```
+sudo snap install ubuntu-frame
+sudo snap install wpe-webkit-mir-kiosk
+sudo snap set wpe-webkit-mir-kiosk url="http://localhost:8000/?kiosk=1"
+sudo snap restart wpe-webkit-mir-kiosk
+```
+
+On Ubuntu Core, both run as services and start at boot, and the kiosk's `wayland` plug
+connects to Frame automatically. From now on the Pi boots straight into the demo. `?kiosk=1`
+hides the mouse cursor.
+
+---
+
+## Running the demo (on stage)
+
+**Before the talk (10 minutes)**
+
+1. Power on the Pi with camera, HDMI and network connected. The demo page appears on its
+   own after about a minute.
+2. From the laptop, check everything is up:
+
+   ```
+   ssh <user>@<pi-ip> 'snap services edge-vision-core ubuntu-frame wpe-webkit-mir-kiosk'
+   ```
+
+   All three should be `active`.
+3. Point the camera at where you'll hold objects, not at a ceiling light. Light the scene
+   well; confidence rises a lot with good lighting.
+4. Have props ready: a cup, a bottle, a phone, a book.
+5. Keep a terminal open with `ssh <user>@<pi-ip>` for the live steps below.
+
+**Live, about 5 minutes**
+
+1. **Show the detection.** Walk into view (`person`), then hold up a cup, a bottle and a
+   phone. Point at the FPS and ms/frame numbers: everything runs on the Pi's CPU, offline.
+2. **Show it's a confined snap.**
+
+   ```
+   snap connections edge-vision-core
+   ```
+
+   The app can only use the camera and the network, nothing else on the device.
+3. **Swap the model live, without reinstalling.** Copy a different `.eim` (for example
+   a FOMO model you trained) over the old one:
+
+   ```
+   sudo cp other-model.eim /var/snap/edge-vision-core/common/model.eim
+   ```
+
+   The screen switches to the new model within about 3 seconds.
+4. **Tune it remotely.**
+
+   ```
+   sudo snap set edge-vision-core threshold=0.7
+   ```
+
+   Fewer, more confident boxes appear after a short restart.
+5. **Show the same page from the audience's side.** Open `http://<pi-ip>:8000` on the
+   laptop or a phone on the same network.
+
+**If something goes wrong on stage**
+
+| Symptom | Quick fix |
+| --- | --- |
+| Screen black or grey | `sudo snap restart ubuntu-frame wpe-webkit-mir-kiosk` |
+| "No camera at /dev/video0" | Re-plug the USB camera; check `ls /dev/video*` and `snap connections edge-vision-core` |
+| "No model" | `ls -l /var/snap/edge-vision-core/common/` and copy `model.eim` again |
+| Nothing detected | Add light, move closer, or `sudo snap set edge-vision-core threshold=0.35` |
+| Page doesn't load from the laptop | Laptop and Pi must be on the same network; check the IP with `ip -4 -br addr` |
+
+---
+
+## Configuration
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `port` | `8000` | HTTP port |
+| `camera` | `0` | Camera to open (`/dev/videoN`) |
+| `threshold` | `0.6` | Minimum confidence to show a box or label (0.45 suits the COCO model) |
+| `model-url` | unset | Download `model.eim` from this URL at start, instead of copying it |
+
+```
+sudo snap set edge-vision-core camera=1 threshold=0.5
+snap get edge-vision-core
+```
+
+Each change restarts the service with the new values.
+
+## How it works
+
+- **Capture:** OpenCV reads 640×480 frames from `/dev/videoN` through V4L2.
+- **Inference:** the `.eim` file is a standalone Linux executable built by Edge Impulse.
+  The app starts it with a Unix socket path and sends each frame as JSON. Frames are
+  centre-cropped to the model's aspect ratio, resized, and packed as RGB pixels. The
+  model replies with boxes or class scores. The app speaks this protocol directly, so it
+  doesn't need the `edge_impulse_linux` SDK or its PyAudio dependency.
+- **Display:** a small HTTP server serves the page, `/frame.jpg` (one frame, with boxes
+  drawn) and `/api/status` (JSON results). The page draws frames onto a canvas instead
+  of using an MJPEG `<img>`, which flickers in WebKit, the engine the kiosk uses.
+- **Model hot-swap:** the app checks `model.eim`'s timestamp every 3 seconds and reloads
+  it when it changes.
+
+| Path | Purpose |
+| --- | --- |
+| `snap/snapcraft.yaml` | Snap definition: core24, strict confinement, `camera`/`network`/`network-bind` plugs |
+| `snap/hooks/install`, `snap/hooks/configure` | Default options, validation, and a restart when options change |
+| `src/app/edge_vision.py` | Capture, inference and the HTTP server |
+| `src/www/index.html` | The live display page |
+| `requirements.txt` | `opencv-python-headless`, `numpy` |
+
+## Developing on a Mac
+
+```
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+CAMERA=0 .venv/bin/python src/app/edge_vision.py      # then open http://localhost:8000
+```
+
+The camera view and page work on macOS. The `.eim` won't run there because it's an
+aarch64 Linux binary, so test the model on the Pi.
+
+## Roadmap
+
+- Physical AI: switch an LED or buzzer through the `gpio` interface when a chosen object
+  is detected.
+- Ship the model as a snap component, so it updates separately from the app.
+- Publish to the Snap Store (`snapcraft register edge-vision-core`) so it installs with
+  `sudo snap install edge-vision-core`.
