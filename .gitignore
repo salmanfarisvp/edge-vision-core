@@ -1,14 +1,2 @@
-# snapcraft build output
-*.snap
-*.comp
-parts/
-stage/
-prime/
-
-# models: only the bundled default is tracked
 *.eim
 !models/yolov5-coco-320-int8-linux-aarch64.eim
-
-# python
-__pycache__/
-.venv/

@@ -1,3 +1,0 @@
-#!/bin/sh -e
-# Seed defaults so `snap get edge-vision-core` shows every option.
-snapctl set port=8000 camera=0 threshold=0.6
